@@ -45,6 +45,77 @@ class StateTests(unittest.TestCase):
 class ScannerTests(unittest.TestCase):
     def cfg(self):
         return {'projects': [], 'external_lookup': True, 'excluded_packages': []}
+    def test_known_hosts_backup_readable_but_not_writable_by_others(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            ssh = home / '.ssh'; ssh.mkdir(mode=0o700)
+            backup = ssh / 'known_hosts.old'; backup.touch(); backup.chmod(0o644)
+            with patch('monitor.scanner.Path.home', return_value=home):
+                scanner = Scanner(self.cfg()); scanner.permissions()
+                self.assertFalse(scanner.findings)
+                backup.chmod(0o664)
+                scanner.permissions()
+                self.assertEqual(len(scanner.findings), 1)
+                self.assertEqual(scanner.findings[0]['target'], str(backup))
+    def test_private_key_remains_restricted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            ssh = home / '.ssh'; ssh.mkdir(mode=0o700)
+            key = ssh / 'id_ed25519'; key.touch(); key.chmod(0o644)
+            with patch('monitor.scanner.Path.home', return_value=home):
+                scanner = Scanner(self.cfg()); scanner.permissions()
+                self.assertEqual(len(scanner.findings), 1)
+
+    def updates_result(self, security_date='Wed, 14 Oct 2026 05:35:14 +0000', valid_until=None, stamp=False, upgrades='Listing...\n'):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            lists = root / 'lists'; lists.mkdir()
+            base = lists / 'ubuntu_resolute_InRelease'
+            base.write_text('Origin: Ubuntu\nSuite: resolute\nDate: Thu, 23 Apr 2026 17:07:15 +0000\n')
+            security = lists / 'ubuntu_resolute-security_InRelease'
+            security.write_text('Origin: Ubuntu\nSuite: resolute-security\nDate: ' + security_date + '\n' +
+                                (f'Valid-Until: {valid_until}\n' if valid_until else ''))
+            # File mtime can retain publisher timestamps and is not refresh time.
+            for file in lists.iterdir():
+                os.utime(file, (1770000000, 1770000000))
+            success = root / 'update-success-stamp'
+            if stamp:
+                success.touch(); os.utime(success, (1791954000, 1791954000))
+            def path(value):
+                if value == '/var/lib/apt/lists': return lists
+                if value == '/var/lib/apt/periodic/update-success-stamp': return success
+                return Path(value)
+            with patch('monitor.scanner.Path', side_effect=path), patch('platform.freedesktop_os_release', return_value={'VERSION_CODENAME': 'resolute'}), patch('monitor.scanner.time.time', return_value=1792022400), patch('monitor.scanner.command', return_value=upgrades):
+                scanner = Scanner(self.cfg())
+                scanner.check('APT', scanner.updates)
+                return scanner
+
+    def test_old_base_release_does_not_create_stale_cache_warning(self):
+        scanner = self.updates_result()
+        self.assertFalse(scanner.findings)
+        self.assertEqual(scanner.checks[0]['status'], 'checked')
+        self.assertIn('마지막', scanner.checks[0]['note'])
+        self.assertIn('확인할 수 없습니다', scanner.checks[0]['note'])
+    def test_stale_security_metadata_still_warns(self):
+        scanner = self.updates_result(security_date='Thu, 01 Oct 2026 05:35:14 +0000')
+        self.assertEqual(len(scanner.findings), 1)
+        self.assertIn('resolute-security', scanner.findings[0]['evidence'])
+        self.assertNotIn('174', scanner.findings[0]['evidence'])
+    def test_expired_metadata_warns_even_with_recent_date(self):
+        scanner = self.updates_result(valid_until='Wed, 14 Oct 2026 23:00:00 +0000')
+        self.assertEqual(len(scanner.findings), 1)
+        self.assertIn('만료', scanner.findings[0]['evidence'])
+    def test_refresh_stamp_separate_from_publication_age(self):
+        scanner = self.updates_result(stamp=True)
+        self.assertFalse(scanner.findings)
+        self.assertIn('성공 기록', scanner.checks[0]['note'])
+    def test_invalid_metadata_date_is_incomplete(self):
+        scanner = self.updates_result(security_date='invalid-date')
+        self.assertEqual(scanner.checks[0]['status'], 'incomplete')
+    def test_security_upgrade_candidates_are_preserved(self):
+        scanner = self.updates_result(upgrades='Listing...\nopenssl/resolute-security 3.0 amd64 [upgradable from: 2.0]\n')
+        self.assertEqual(len(scanner.findings), 1)
+        self.assertEqual(scanner.findings[0]['severity'], 'high')
     def test_secret_evidence_never_contains_value_or_line(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

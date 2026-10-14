@@ -2,12 +2,15 @@
 import hashlib
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
 import time
 import urllib.request
 from pathlib import Path
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from . import state
 
 SKIP_DIRS = {'.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.cache', '.ssh', '.aws', '.codex', '.claude'}
@@ -90,12 +93,13 @@ class Scanner:
             if not path.exists() or path.is_symlink():
                 continue
             mode = stat.S_IMODE(path.stat().st_mode)
-            public = path.name.endswith('.pub') or path.name == 'known_hosts'
+            public = path.name.endswith('.pub') or path.name in ('known_hosts', 'known_hosts.old')
             unsafe = mode & 0o022 if public else mode & 0o077
             if unsafe:
                 self.finding('WSL', 'medium', '민감한 경로의 권한 검토 필요', path,
                              f'파일 내용은 읽지 않았습니다. 현재 권한: {mode:03o}.',
-                             '소유자와 공유 필요성을 확인한 뒤 개인 디렉터리는 700, 개인 파일은 600 권한을 검토하세요.', 'stat으로 소유자와 권한을 다시 확인하세요.')
+                             ('호스트 공개 키 목록·공개 키 파일은 다른 사용자의 쓰기 권한을 제거하세요. 읽기 권한만으로 개인 키 노출로 판단하지 마세요.' if public else
+                              '소유자와 공유 필요성을 확인한 뒤 개인 디렉터리는 700, 개인 파일은 600 권한을 검토하세요.'), 'stat으로 소유자와 권한을 다시 확인하세요.')
 
     def ssh(self):
         active = subprocess.run(['systemctl', 'is-active', 'ssh.service'], capture_output=True, text=True)
@@ -115,16 +119,51 @@ class Scanner:
         entries = list(Path('/var/lib/apt/lists').glob('*InRelease'))
         if not entries:
             raise CheckError('APT 메타데이터 없음')
-        age = int((time.time() - min(p.stat().st_mtime for p in entries)) / 86400)
-        if age > 2:
-            self.finding('WSL', 'low', 'APT 메타데이터가 오래됨', '/var/lib/apt/lists', f'가장 오래된 저장소 메타데이터: 약 {age}일.',
-                         '사용자가 승인한 뒤 apt update로 메타데이터를 갱신하고 다시 점검하세요.', 'APT 메타데이터 수정 시각과 재점검 결과를 확인하세요.')
+        current = time.time()
+        codename = platform.freedesktop_os_release().get('VERSION_CODENAME')
+        ages = []
+        for entry in entries:
+            fields = {}
+            for line in entry.read_text().splitlines():
+                if line.startswith(('Origin:', 'Suite:', 'Date:', 'Valid-Until:')):
+                    key, value = line.split(':', 1)
+                    fields[key] = value.strip()
+            # Ubuntu's base release is static. Its publication date is not a
+            # record of the last apt update, and can remain old after refresh.
+            static_base = fields.get('Origin') == 'Ubuntu' and codename and fields.get('Suite') == codename
+            expired = 'Valid-Until' in fields and parsedate_to_datetime(fields['Valid-Until']).timestamp() <= current
+            if static_base and not expired:
+                continue
+            published = parsedate_to_datetime(fields['Date'])
+            if published.tzinfo is None or published.timestamp() > current + 86400:
+                raise CheckError('저장소 발행 시각을 확인할 수 없습니다.')
+            age = max(0, int((current - published.timestamp()) / 86400))
+            if not static_base:
+                ages.append(age)
+            if expired or age > 2:
+                evidence = f'{entry.name}: ' + ('Valid-Until 유효기간 만료.' if expired else f'메타데이터 발행 후 약 {age}일 경과.')
+                self.finding('WSL', 'low', 'APT 저장소 메타데이터 확인 필요', '/var/lib/apt/lists',
+                             evidence + ' 발행 시각은 마지막 apt update 실행 시각이 아닙니다.',
+                             '승인 후 apt update를 실행하고 저장소별 오류·서명·유효기간을 확인하세요. 저장소에서 새 메타데이터를 발행하지 않은 경우도 구분하세요.',
+                             'apt update의 성공 여부와 InRelease의 Date·Valid-Until을 확인하고 재점검하세요.')
+        if not ages:
+            raise CheckError('변경되는 저장소의 메타데이터가 없습니다.')
+        stamp = Path('/var/lib/apt/periodic/update-success-stamp')
+        refresh_note = '마지막 apt update 전체 성공 시각은 확인할 수 없습니다(성공 기록 없음).'
+        if stamp.exists():
+            updated = stamp.stat().st_mtime
+            refresh_note = 'APT 자동 갱신 성공 기록: ' + datetime.fromtimestamp(updated, timezone.utc).isoformat() + '. 수동 갱신 여부·전체 저장소 성공을 보증하지 않습니다.'
+            if current - updated > 3 * 86400:
+                self.finding('WSL', 'low', 'APT 갱신 성공 기록 확인 필요', stamp,
+                             f'자동 갱신 성공 기록이 약 {int((current - updated) / 86400)}일 전입니다. 이후 수동 갱신 여부는 확인할 수 없습니다.',
+                             '최근 수동 갱신 여부와 자동 갱신 설정을 확인하고 필요하면 승인 후 apt update를 실행하세요.',
+                             '갱신 결과와 자동 갱신 성공 기록을 확인하세요.')
         upgrades = command(['apt', 'list', '--upgradable'])
         security = [line.split()[0] for line in upgrades.splitlines() if '-security' in line]
         if security:
             self.finding('WSL', 'high', '캐시에서 보안 업데이트 후보 발견', 'APT', '\n'.join(security[:50]),
                          '최신 패키지 메타데이터와 변경 영향을 확인하고 보안 업데이트를 적용하세요. 서비스 재시작 필요성을 확인하세요.', '업데이트 후 apt list --upgradable 및 필요 시 재부팅 필요 여부를 확인하세요.')
-        return f'로컬 APT 캐시 기반 검사(최대 {age}일 경과). 패키지 설치·apt update는 실행하지 않습니다. 전체 CVE 판정이 아닙니다.'
+        return f'변경되는 저장소의 발행 시각 기준 최대 {max(ages)}일 경과. Ubuntu 정적 기본 저장소의 오래된 발행 시각은 갱신 실패로 판정하지 않습니다. {refresh_note} 패키지 설치·apt update는 실행하지 않습니다. 전체 CVE 판정이 아닙니다.'
 
     def docker(self):
         ids = command(['docker', 'ps', '-q']).split()

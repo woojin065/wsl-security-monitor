@@ -3,12 +3,28 @@
 개발용 WSL과 Docker, 지정한 프로젝트를 읽기 전용으로 점검하는 로컬 서비스입니다.
 **점검 결과·근거·해결 방법과 에이전트에 붙여 넣을 지시문**을 제공합니다. 자동 수정은 하지 않습니다.
 
-## 시작하기
+## 실행 방법
+
+### 이미 설치된 현재 WSL에서 사용하기
+
+Windows 브라우저에서 **http://localhost:8765** 를 엽니다.
+서비스가 실행 중이면 터미널에서 별도로 서버를 띄울 필요가 없습니다.
+화면이 열리지 않거나 서비스를 중지한 경우 WSL 터미널에서 실행합니다:
+
+```bash
+systemctl --user start wsl-security-monitor.service wsl-security-scan.timer
+systemctl --user status wsl-security-monitor.service wsl-security-scan.timer --no-pager
+```
+
+웹 서비스는 `active (running)`, 예약 타이머는 `active (waiting)` 상태인지 확인합니다.
+
+### 처음 설치하기
 
 Ubuntu/WSL2, Python 3.11 이상, 활성화된 systemd 사용자 관리자가 필요합니다.
 Python 표준 라이브러리만 사용하며 pip, Node, npm 설치는 필요 없습니다.
 
 ```bash
+cd ~
 git clone https://github.com/woojin065/wsl-security-monitor.git
 cd wsl-security-monitor
 python3 install.py
@@ -17,18 +33,94 @@ loginctl enable-linger "$USER"
 
 `loginctl enable-linger`는 로그인 세션이 닫혀도 WSL이 실행 중인 동안 사용자 서비스를 유지하고 부팅 시 시작하게 합니다.
 환경에 따라 권한이 필요할 수 있습니다. WSL 자체를 시작하는 Windows 작업은 등록하지 않습니다.
+설치와 서비스 실행은 일반 사용자 계정으로 진행합니다. `sudo python3 install.py`로 실행하지 마세요.
 
-브라우저에서 **http://localhost:8765** 를 엽니다.
+설치 후 **http://localhost:8765** 를 엽니다. 최초 설치만으로 수동 점검이 실행되지는 않습니다.
+예약 시각을 기다리거나 화면에서 **지금 점검**을 누르세요.
 
-1. **프로젝트 검사 설정**에서 검사할 폴더를 한 줄에 하나씩 지정하고 저장합니다.
-2. 사설 패키지 이름을 외부에 보내고 싶지 않다면 외부 조회 제외 목록에 넣거나 외부 조회를 끕니다.
-3. **지금 점검**을 누릅니다. 처음에는 WSL·Docker만 검사하며 프로젝트 경로를 지정해야 개발 프로젝트 검사가 실행됩니다.
-4. 문제의 근거와 해결 방법을 읽고 **해결 지시문 복사**를 누릅니다.
-5. 여러 문제는 체크한 뒤 **선택한 문제 지시문 복사**로 한 번에 전달할 수 있습니다.
-6. 에이전트에서 변경·승인·검증을 진행한 다음 다시 점검합니다.
+### 서비스 등록 없이 수동 실행하기
 
-클립보드 권한이 없으면 지시문을 선택해 복사하는 창이 열립니다.
-웹 화면은 한국 시간으로 표시하며 점검 중에도 이력을 볼 수 있습니다.
+프로젝트 디렉터리에서 웹 서버를 실행합니다. 이 방식은 터미널을 닫거나 `Ctrl+C`를 누르면 종료되며,
+예약 점검을 등록하지 않습니다. 이미 서비스가 같은 포트에서 실행 중이면 중복 실행하지 마세요.
+
+```bash
+cd ~/wsl-security-monitor
+python3 -m monitor serve
+```
+
+별도 WSL 터미널에서 점검만 한 번 실행할 수도 있습니다:
+
+```bash
+cd ~/wsl-security-monitor
+python3 -m monitor scan
+```
+
+웹 화면과 명령행 점검은 같은 사용자의 로컬 설정·결과를 사용합니다.
+웹 서버가 없어도 명령행 점검 결과는 저장되며, 다음에 웹 화면을 열면 확인할 수 있습니다.
+
+## 사용 방법
+
+### 1. 프로젝트 검사 설정
+
+화면 아래 **프로젝트 검사 설정**에서 **검사 경로**에 실제 존재하는 폴더를 한 줄에 하나씩 입력합니다.
+예를 들어 아래 두 프로젝트를 검사하려면 다음처럼 입력합니다:
+
+```text
+/home/marty/neld
+/home/marty/neld-console
+```
+
+홈 아래의 프로젝트 폴더만 허용합니다. 홈 전체(`/home/marty`), 자격증명 폴더, 심볼릭 링크는 지정할 수 없습니다.
+프로젝트 경로를 비워 두면 WSL·Docker만 점검하며 프로젝트 검사는 **미점검**으로 표시됩니다.
+
+의존성 취약점을 조회하려면 **공개 패키지 이름·버전을 OSV에 보내 취약점 조회**를 선택합니다.
+사설 패키지 이름을 외부에 보내지 않으려면 **외부 조회에서 제외할 패키지**에 한 줄에 하나씩 입력합니다:
+
+```text
+@company/internal
+PyPI:private-lib
+```
+
+외부 조회를 끄면 패키지 이름·버전도 전송하지 않습니다. 그 경우 의존성 검사는 **미완료**로 표시됩니다.
+**설정 저장**을 누르면 다음 점검부터 적용됩니다. 저장만으로 점검이 시작되지는 않습니다.
+점검 중에는 완료를 기다린 뒤 설정을 저장하세요.
+
+### 2. 점검 실행과 결과 확인
+
+오른쪽 위 **지금 점검**을 누르고 버튼이 **점검 중…**에서 돌아올 때까지 기다립니다.
+완료되면 결과가 자동으로 갱신됩니다. 외부 조회가 많으면 몇 분이 걸릴 수 있습니다.
+
+| 화면 | 확인할 내용 |
+| --- | --- |
+| 최근 점검 요약 | 표시 중인 점검의 시각, 발견 문제 수, 높은 우선순위 수, 미완료·미점검 수 |
+| 발견한 문제 | 문제별 대상, 근거, 해결 방법, 검증 방법 |
+| 검사 범위와 상태 | 어떤 검사가 수행됐는지와 검사 한계 |
+| 점검 이력 | 이전 점검을 선택해 당시의 결과 확인 |
+| 다음 예약 | 실제 다음 자동 점검 날짜와 한국 시간 |
+
+**높음·검토·낮음**은 해결 우선순위를 정하기 위한 표시입니다. 경고가 실제 문제인지 근거를 먼저 확인하세요.
+**새 발견**은 직전 점검에 없던 항목이며, 실제로 그 시점에 새로 생겼다는 뜻은 아닙니다.
+점검 이력에서 과거 결과를 선택하면 요약과 문제 목록도 해당 점검 기준으로 바뀝니다.
+
+| 검사 상태 | 의미 |
+| --- | --- |
+| 검사 완료 | 해당 검사 범위에서 문제를 발견하지 않음 |
+| 문제 발견 | 검사가 경고 항목을 발견함 |
+| 미완료 | 권한 부족, 조회 실패, 지원하지 않는 입력 등으로 검사를 마치지 못함 |
+| 미점검 | 프로젝트 경로 미설정이나 지원 잠금 파일 없음 등으로 검사를 실행하지 않음 |
+
+발견 문제가 0건이어도 **검사 범위와 상태**에서 미완료·미점검과 제외 항목을 함께 확인하세요.
+
+### 3. 에이전트에 해결 요청하기
+
+1. 한 문제만 해결하려면 해당 항목의 **해결 지시문 복사**를 누릅니다.
+2. 여러 문제를 함께 전달하려면 각 항목의 체크박스를 선택한 뒤 **선택한 문제 지시문 복사**를 누릅니다.
+3. 복사한 내용을 에이전트 대화창에 붙여 넣습니다. 에이전트는 현재 상태를 다시 확인하고 프로젝트 지침의 승인 절차를 따릅니다.
+4. 제안한 변경 내용을 검토하고 필요한 승인을 진행합니다. 점검 서비스 자체는 수정 작업을 하지 않습니다.
+5. 해결 후 **지금 점검**을 다시 눌러 경고가 사라졌는지와 검사 상태를 확인합니다.
+
+클립보드 권한이 없으면 지시문 창이 열립니다. 선택된 내용을 `Ctrl+C`로 복사하세요.
+지시문에는 대상 경로와 진단 정보가 포함되므로 외부 에이전트에 전달하기 전에 내용을 확인하세요.
 
 ## 예약 실행
 
@@ -47,14 +139,112 @@ systemctl --user list-timers wsl-security-scan.timer
 journalctl --user -u wsl-security-monitor.service -u wsl-security-scan.service
 ```
 
-systemd 없이 수동 실행하려면:
+## 서비스 관리
+
+아래 명령은 WSL 터미널에서 실행합니다. `systemctl --user` 명령은 프로젝트 폴더 밖에서도 사용할 수 있습니다.
+
+웹 화면과 예약 점검을 시작하려면:
 
 ```bash
-python3 -m monitor serve
-python3 -m monitor scan
+systemctl --user start wsl-security-monitor.service wsl-security-scan.timer
 ```
 
-`python3 -m monitor serve --port 8766`으로 수동 실행 포트를 바꿀 수 있습니다.
+웹 서비스만 다시 시작하려면:
+
+```bash
+systemctl --user restart wsl-security-monitor.service
+```
+
+웹 화면과 예약 점검을 일시 중지하려면:
+
+```bash
+systemctl --user stop wsl-security-monitor.service wsl-security-scan.timer
+```
+
+이 명령은 이미 실행 중인 별도 점검 프로세스를 중단하지 않습니다.
+`stop`은 자동 시작 등록을 유지하므로 다음 WSL 실행 시 다시 시작될 수 있습니다.
+자동 시작도 해제하려면:
+
+```bash
+systemctl --user disable --now wsl-security-monitor.service wsl-security-scan.timer
+```
+
+자동 시작을 다시 등록하려면:
+
+```bash
+systemctl --user enable --now wsl-security-monitor.service wsl-security-scan.timer
+```
+
+소스를 업데이트하려면 점검이 끝난 뒤 실행합니다:
+
+```bash
+cd ~/wsl-security-monitor
+git pull --ff-only
+systemctl --user restart wsl-security-monitor.service
+```
+
+SSH 연결을 사용하는 저장소라면 필요한 경우 기존 SSH agent의 `SSH_AUTH_SOCK`를 설정한 뒤 Git 명령을 실행하세요.
+소스 폴더를 옮기거나 서비스 정의가 변경됐으면 새 위치에서 `python3 install.py`를 다시 실행합니다.
+사용자 unit 파일은 `~/.config/systemd/user/wsl-security-*`에 있습니다.
+서비스 해제는 로컬 점검 기록이나 linger 설정을 삭제하지 않습니다.
+linger 해제는 다른 사용자 서비스에도 영향을 줄 수 있으므로 별도로 판단하세요.
+
+## 문제가 생겼을 때
+
+### 웹 화면이 열리지 않을 때
+
+WSL이 실행 중인지 확인하고 상태·로그를 확인합니다:
+
+```bash
+systemctl --user status wsl-security-monitor.service --no-pager
+journalctl --user -u wsl-security-monitor.service -n 50 --no-pager
+```
+
+페이지 응답은 다음 명령으로 확인합니다:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:8765/
+```
+
+정상 응답은 `200`입니다. WSL에서는 정상인데 Windows 브라우저에서만 열리지 않으면
+주소가 `http://localhost:8765`인지와 Windows·WSL의 localhost 연결 상태를 확인하세요.
+`Failed to connect to bus`가 표시되면 systemd 사용자 관리자가 동작하는 환경인지 확인하고,
+필요하면 위의 수동 실행 방식을 사용하세요. 수동 실행만으로 예약 점검은 동작하지 않습니다.
+
+### 포트가 이미 사용 중일 때
+
+```bash
+ss -ltn 'sport = :8765'
+```
+
+이미 모니터 서비스가 실행 중이면 해당 웹 화면을 사용하세요. 다른 프로그램이 포트를 사용 중이라면
+등록된 웹 서비스를 중지하고 다른 포트로 수동 실행할 수 있습니다:
+
+```bash
+systemctl --user stop wsl-security-monitor.service
+cd ~/wsl-security-monitor
+python3 -m monitor serve --port 8766
+```
+
+이 경우 접속 주소는 **http://localhost:8766** 입니다. 기본 서비스의 포트 설정을 바꾸는 명령은 아니며,
+수동 서버를 종료하고 기본 웹 서비스를 다시 시작하면 `8765`를 사용합니다.
+
+### 검사가 미완료이거나 경고가 계속 보일 때
+
+- 프로젝트 **미점검**: 검사 경로를 입력하고 저장한 뒤 새 점검을 실행합니다.
+- 의존성 **미완료**: 외부 조회 설정·인터넷 연결·지원 잠금 파일 형식을 확인합니다.
+- Docker·SSH 검사 **미완료**: 도구 설치 여부, 서비스 실행 상태, 사용자 권한을 확인합니다. 전체 서비스를 root로 실행해서 우회하지 마세요.
+- **점검이 이미 실행 중**: 진행 중인 점검을 기다립니다. 잠금 파일을 임의로 삭제하지 마세요.
+- 해결 후 경고가 남음: 새 점검을 실행했는지, **점검 이력**에서 최신 결과를 선택했는지 확인합니다.
+- APT 성공 시각 **확인 불가**: 마지막 전체 갱신 성공을 입증할 기록이 없다는 뜻이며, 그 자체로 오랫동안 갱신하지 않았다는 뜻은 아닙니다.
+
+점검 서비스 로그는 다음 명령으로 확인합니다:
+
+```bash
+journalctl --user -u wsl-security-scan.service -n 50 --no-pager
+```
+
+화면에서 실행한 점검의 오류는 화면 메시지도 함께 확인하세요.
 
 ## 검사 범위
 
@@ -117,22 +307,6 @@ node tests/test_ui.js
 프로젝트 범위, 요청 출처 검증, 날짜 간격, 중복 점검 방지를 확인합니다.
 복사 기능 테스트만 선택적으로 Node.js가 필요합니다. 실행 서비스에는 Node.js가 필요하지 않습니다.
 실제 환경에서는 웹 HTTP 응답, 서비스·타이머 상태, 읽기 전용 점검과 공개 패키지 OSV 응답을 확인합니다.
-
-소스 변경 후 웹 서비스를 다시 시작합니다:
-
-```bash
-systemctl --user restart wsl-security-monitor.service
-```
-
-서비스를 중지·해제하려면:
-
-```bash
-systemctl --user disable --now wsl-security-monitor.service wsl-security-scan.timer
-```
-
-사용자 unit 파일은 `~/.config/systemd/user/wsl-security-*`에 있습니다.
-서비스 해제는 로컬 점검 기록이나 linger 설정을 삭제하지 않습니다.
-linger 해제는 다른 사용자 서비스에도 영향을 줄 수 있으므로 별도로 판단하세요.
 
 ## 참고 자료
 
